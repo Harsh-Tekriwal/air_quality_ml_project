@@ -1,0 +1,167 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+%matplotlib inline
+
+import warnings
+warnings.filterwarnings('ignore')
+
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.linear_model import SGDRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, r2_score
+
+import plotly.express as px
+import requests
+
+df = pd.read_csv("data.csv", encoding='latin1')
+
+print("Dataset Shape:", df.shape)
+display(df.head())
+
+df.replace("NA", np.nan, inplace=True)
+
+numeric_cols = ['so2', 'no2', 'rspm', 'spm']
+
+for col in numeric_cols:
+    df[col] = pd.to_numeric(df[col], errors='coerce')
+
+df.dropna(subset=['rspm'], inplace=True)
+df[numeric_cols] = df[numeric_cols].fillna(df[numeric_cols].mean())
+
+df['state'] = df['state'].astype(str).str.strip().str.title()
+
+df_ml = df.copy()
+
+cat_cols = ['state', 'location', 'agency', 'type', 'location_monitoring_station']
+
+for col in cat_cols:
+    df_ml[col] = df_ml[col].astype(str)
+    df_ml[col] = LabelEncoder().fit_transform(df_ml[col])
+
+X = df_ml[['stn_code', 'state', 'location', 'agency', 'type', 'so2', 'no2']]
+y = df_ml['rspm']
+
+X = X.apply(pd.to_numeric, errors='coerce')
+X = X.fillna(X.mean())
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+gd_model = SGDRegressor(max_iter=1000, eta0=0.01, random_state=42)
+gd_model.fit(X_train_scaled, y_train)
+y_pred_gd = gd_model.predict(X_test_scaled)
+
+rf_model = RandomForestRegressor(n_estimators=50, random_state=42)
+rf_model.fit(X_train, y_train)
+y_pred_rf = rf_model.predict(X_test)
+
+mse_gd = mean_squared_error(y_test, y_pred_gd)
+mse_rf = mean_squared_error(y_test, y_pred_rf)
+
+r2_gd = r2_score(y_test, y_pred_gd)
+r2_rf = r2_score(y_test, y_pred_rf)
+
+print("\nGradient Descent -> MSE:", round(mse_gd,2), "| R2:", round(r2_gd,3))
+print("Random Forest   -> MSE:", round(mse_rf,2), "| R2:", round(r2_rf,3))
+
+df['AQI'] = (
+    0.25 * df['so2'] +
+    0.25 * df['no2'] +
+    0.25 * df['rspm'] +
+    0.25 * df['spm']
+)
+
+def categorize_aqi(aqi):
+    if aqi <= 50:
+        return "Good"
+    elif aqi <= 100:
+        return "Satisfactory"
+    elif aqi <= 200:
+        return "Moderate"
+    elif aqi <= 300:
+        return "Poor"
+    elif aqi <= 400:
+        return "Very Poor"
+    else:
+        return "Severe"
+
+df['AQI_Category'] = df['AQI'].apply(categorize_aqi)
+
+state_aqi = df.groupby('state')['AQI'].mean().sort_values(ascending=False)
+top_states_df = state_aqi.reset_index()
+top_states_df.columns = ['State', 'AQI']
+
+print("\nState-wise AQI:")
+display(top_states_df)
+
+india_aqi = df['AQI'].mean()
+print("\nIndia AQI:", round(india_aqi,2))
+
+sample_size = min(5000, len(y_test))
+idx = np.random.choice(len(y_test), sample_size, replace=False)
+
+y_true = y_test.iloc[idx]
+y_gd_s = y_pred_gd[idx]
+y_rf_s = y_pred_rf[idx]
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 6), constrained_layout=True)
+
+axes[0].scatter(y_true, y_gd_s, alpha=0.5)
+axes[0].plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], linestyle='--')
+axes[0].set_title("Gradient Descent")
+
+axes[1].scatter(y_true, y_rf_s, alpha=0.5)
+axes[1].plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], linestyle='--')
+axes[1].set_title("Random Forest")
+
+plt.show()
+
+plt.figure()
+plt.bar(['GD','RF'], [mse_gd, mse_rf])
+plt.title("MSE Comparison")
+plt.tight_layout()
+plt.show()
+
+plt.figure()
+plt.bar(['GD','RF'], [r2_gd, r2_rf])
+plt.title("R2 Comparison")
+plt.tight_layout()
+plt.show()
+
+plt.figure()
+plt.hist(df['AQI'], bins=50)
+plt.title("AQI Distribution")
+plt.tight_layout()
+plt.show()
+
+plt.figure(figsize=(10,5))
+plt.bar(top_states_df['State'], top_states_df['AQI'])
+plt.xticks(rotation=45)
+plt.title("State AQI")
+plt.tight_layout()
+plt.show()
+
+geojson_url = "https://raw.githubusercontent.com/geohacker/india/master/state/india_telengana.geojson"
+india_states = requests.get(geojson_url).json()
+
+state_aqi_map = df.groupby('state')['AQI'].mean().reset_index()
+
+fig = px.choropleth(
+    state_aqi_map,
+    geojson=india_states,
+    featureidkey="properties.NAME_1",
+    locations="state",
+    color="AQI",
+    title="India AQI Map"
+)
+
+fig.update_geos(fitbounds="locations", visible=False)
+
+fig.show()
